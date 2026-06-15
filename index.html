@@ -535,6 +535,9 @@
     let drawing = false;
     let strokeCount = 0;
     let lastPoint = null;
+    let currentStroke = null;
+    let expectedStrokes = [];
+    let correctStrokeCount = 0;
     let availableVoices = [];
 
     const imageMap = [
@@ -620,6 +623,7 @@
       ctx.lineJoin = "round";
       ctx.drawImage(snapshot, 0, 0, snapshot.width / ratio, snapshot.height / ratio);
       renderStrokeGuide(input.value);
+      updateExpectedStrokePositions();
     }
 
     function getPoint(event) {
@@ -634,6 +638,11 @@
       event.preventDefault();
       drawing = true;
       lastPoint = getPoint(event);
+      currentStroke = {
+        start: lastPoint,
+        end: lastPoint,
+        points: [lastPoint]
+      };
       strokeCount += 1;
       drawDot(lastPoint);
       updateProgress();
@@ -650,11 +659,19 @@
       ctx.lineTo(point.x, point.y);
       ctx.stroke();
       lastPoint = point;
+      if (currentStroke) {
+        currentStroke.end = point;
+        currentStroke.points.push(point);
+      }
     }
 
     function stopDrawing() {
+      if (drawing && currentStroke) {
+        checkStroke(currentStroke);
+      }
       drawing = false;
       lastPoint = null;
+      currentStroke = null;
     }
 
     function drawDot(point) {
@@ -667,11 +684,58 @@
     function clearCanvas() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       strokeCount = 0;
+      correctStrokeCount = 0;
       updateProgress();
     }
 
     function updateProgress() {
+      const total = expectedStrokes.length;
+      if (total) {
+        progress.textContent = `${correctStrokeCount}/${total}획 맞음`;
+        return;
+      }
       progress.textContent = `${strokeCount}획 연습 중`;
+    }
+
+    function checkStroke(stroke) {
+      const target = expectedStrokes[correctStrokeCount];
+      if (!target || stroke.points.length < 2) {
+        updateProgress();
+        return;
+      }
+
+      const startDistance = distance(stroke.start, target.start);
+      const endDistance = distance(stroke.end, target.end);
+      const userVector = {
+        x: stroke.end.x - stroke.start.x,
+        y: stroke.end.y - stroke.start.y
+      };
+      const targetVector = {
+        x: target.end.x - target.start.x,
+        y: target.end.y - target.start.y
+      };
+      const similarity = vectorSimilarity(userVector, targetVector);
+      const tolerance = Math.max(34, Math.min(target.glyphWidth, target.glyphHeight) * 0.48);
+      const directionOk = target.length < 18 || similarity > 0.22;
+
+      if (startDistance <= tolerance && (endDistance <= tolerance * 1.45 || directionOk)) {
+        correctStrokeCount += 1;
+        progress.textContent = `${correctStrokeCount}/${expectedStrokes.length}획 좋아요`;
+        return;
+      }
+
+      progress.textContent = `${correctStrokeCount + 1}획 위치를 다시 확인`;
+    }
+
+    function distance(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function vectorSimilarity(a, b) {
+      const aLength = Math.hypot(a.x, a.y);
+      const bLength = Math.hypot(b.x, b.y);
+      if (!aLength || !bLength) return 0;
+      return ((a.x * b.x) + (a.y * b.y)) / (aLength * bLength);
     }
 
     function speakWord() {
@@ -774,12 +838,16 @@
       const visibleChars = chars.slice(0, 10);
       if (!visibleChars.length) {
         strokeGuide.innerHTML = "";
+        expectedStrokes = [];
         return;
       }
 
+      const strokeData = [];
       const glyphs = visibleChars.map((char) => {
         if (char === " ") return `<span class="guide-space" aria-hidden="true"></span>`;
         const strokes = getStrokeTemplate(char);
+        const glyphIndex = strokeData.length;
+        strokeData.push(strokes);
         let glyphOrder = 1;
         const paths = strokes.map((stroke, index) => {
           const start = stroke.start || parseStartPoint(stroke.d);
@@ -793,11 +861,47 @@
           `;
         }).join("");
 
-        return `<span class="guide-glyph" aria-hidden="true">${escapeHtml(char)}<svg class="guide-glyph-svg" viewBox="0 0 100 100" preserveAspectRatio="none"><defs><marker id="guideArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#e73f68"></path></marker></defs><g transform="translate(11 11) scale(0.78)">${paths}</g></svg></span>`;
+        return `<span class="guide-glyph" data-guide-index="${glyphIndex}" aria-hidden="true">${escapeHtml(char)}<svg class="guide-glyph-svg" viewBox="0 0 100 100" preserveAspectRatio="none"><defs><marker id="guideArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#e73f68"></path></marker></defs><g transform="translate(11 11) scale(0.78)">${paths}</g></svg></span>`;
       }).join("");
 
       strokeGuide.innerHTML = `<div class="guide-word">${glyphs}</div>`;
+      strokeGuide._strokeData = strokeData;
       strokeGuide.toggleAttribute("hidden", !guideToggle.checked);
+      updateExpectedStrokePositions();
+      updateProgress();
+    }
+
+    function updateExpectedStrokePositions() {
+      const strokeData = strokeGuide._strokeData || [];
+      const canvasRect = canvas.getBoundingClientRect();
+      expectedStrokes = [];
+      document.querySelectorAll("#strokeGuide .guide-glyph").forEach((glyph) => {
+        const glyphIndex = Number(glyph.dataset.guideIndex);
+        const strokes = strokeData[glyphIndex] || [];
+        const glyphRect = glyph.getBoundingClientRect();
+        strokes.forEach((stroke) => {
+          const start = stroke.start || parseStartPoint(stroke.d);
+          const end = stroke.end || parseEndPoint(stroke.d);
+          const mappedStart = mapGuidePointToCanvas(start, glyphRect, canvasRect);
+          const mappedEnd = mapGuidePointToCanvas(end, glyphRect, canvasRect);
+          expectedStrokes.push({
+            start: mappedStart,
+            end: mappedEnd,
+            glyphWidth: glyphRect.width,
+            glyphHeight: glyphRect.height,
+            length: distance(mappedStart, mappedEnd)
+          });
+        });
+      });
+    }
+
+    function mapGuidePointToCanvas(point, glyphRect, canvasRect) {
+      const x = glyphRect.left + glyphRect.width * ((11 + point.x * 0.78) / 100);
+      const y = glyphRect.top + glyphRect.height * ((11 + point.y * 0.78) / 100);
+      return {
+        x: x - canvasRect.left,
+        y: y - canvasRect.top
+      };
     }
 
     function escapeHtml(value) {
@@ -814,6 +918,15 @@
       return {
         x: match ? Number(match[1]) : 20,
         y: match ? Number(match[2]) : 20
+      };
+    }
+
+    function parseEndPoint(path) {
+      const matches = Array.from(path.matchAll(/(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/g));
+      const last = matches[matches.length - 1];
+      return {
+        x: last ? Number(last[1]) : 80,
+        y: last ? Number(last[2]) : 80
       };
     }
 
