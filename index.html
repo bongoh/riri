@@ -32,6 +32,7 @@
         radial-gradient(circle at 90% 16%, rgba(142, 202, 230, 0.45), transparent 25%),
         linear-gradient(135deg, #fffaf0 0%, #eef8f5 100%);
       font-family: ui-rounded, "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", sans-serif;
+      overscroll-behavior: none;
     }
 
     body {
@@ -280,6 +281,9 @@
       overflow: hidden;
       touch-action: none;
       user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      overscroll-behavior: contain;
     }
 
     .trace-word {
@@ -395,6 +399,10 @@
       width: 100%;
       height: 100%;
       cursor: crosshair;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
     }
 
     .progress {
@@ -636,6 +644,9 @@
 
     function startDrawing(event) {
       event.preventDefault();
+      if (event.pointerId !== undefined && canvas.setPointerCapture) {
+        canvas.setPointerCapture(event.pointerId);
+      }
       drawing = true;
       lastPoint = getPoint(event);
       currentStroke = {
@@ -665,13 +676,26 @@
       }
     }
 
-    function stopDrawing() {
+    function stopDrawing(event) {
       if (drawing && currentStroke) {
         checkStroke(currentStroke);
+      }
+      if (event?.pointerId !== undefined && canvas.releasePointerCapture) {
+        try {
+          if (!canvas.hasPointerCapture || canvas.hasPointerCapture(event.pointerId)) {
+            canvas.releasePointerCapture(event.pointerId);
+          }
+        } catch (_) {
+          // Some iPad browsers can release capture automatically after pencil input.
+        }
       }
       drawing = false;
       lastPoint = null;
       currentStroke = null;
+    }
+
+    function blockCanvasGesture(event) {
+      event.preventDefault();
     }
 
     function drawDot(point) {
@@ -805,8 +829,12 @@
 
     canvas.addEventListener("pointerdown", startDrawing);
     canvas.addEventListener("pointermove", draw);
-    window.addEventListener("pointerup", stopDrawing);
-    window.addEventListener("pointercancel", stopDrawing);
+    canvas.addEventListener("pointerup", stopDrawing);
+    canvas.addEventListener("pointercancel", stopDrawing);
+    canvas.addEventListener("touchstart", blockCanvasGesture, { passive: false });
+    canvas.addEventListener("touchmove", blockCanvasGesture, { passive: false });
+    canvas.addEventListener("gesturestart", blockCanvasGesture);
+    canvas.addEventListener("gesturechange", blockCanvasGesture);
     window.addEventListener("resize", resizeCanvas);
     clearButton.addEventListener("click", clearCanvas);
     speakButton.addEventListener("click", speakWord);
